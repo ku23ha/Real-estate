@@ -18,13 +18,25 @@ def test_migration_can_be_rolled_back(tmp_path: Path, monkeypatch) -> None:
     config = Config(str(API_ROOT / "alembic.ini"))
 
     command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    try:
+        tables = set(inspect(engine).get_table_names())
+        assert {
+            "deals", "properties", "organizations", "users", "developers",
+            "locations", "micro_markets", "projects",
+        } <= tables
+    finally:
+        engine.dispose()
+
     command.downgrade(config, "base")
 
     engine = create_engine(database_url)
     try:
         tables = set(inspect(engine).get_table_names())
-        assert "deals" not in tables
-        assert "properties" not in tables
+        assert not {
+            "deals", "properties", "organizations", "users", "developers",
+            "locations", "micro_markets", "projects",
+        } & tables
     finally:
         engine.dispose()
 

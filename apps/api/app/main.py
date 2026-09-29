@@ -10,7 +10,28 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session, selectinload
 
 from app.database import get_database_url, get_db, make_engine, make_session_factory
-from app.models import Deal, Property
+from app.domain import (
+    LocationInput,
+    LocationRecord,
+    MicroMarketInput,
+    MicroMarketRecord,
+    NamedRecord,
+    NameInput,
+    ProjectInput,
+    ProjectRecord,
+    UserInput,
+    UserRecord,
+)
+from app.models import (
+    Deal,
+    Developer,
+    Location,
+    MicroMarket,
+    Organization,
+    Project,
+    Property,
+    User,
+)
 
 
 @asynccontextmanager
@@ -232,3 +253,136 @@ def update_property(
     db.commit()
     db.refresh(property_record)
     return _to_property_record(property_record)
+
+
+def _reference_or_404(db: Session, model, record_id: UUID, label: str):
+    row = db.get(model, record_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"{label} not found")
+    return row
+
+
+@app.post("/api/v1/organizations", response_model=NamedRecord, status_code=201)
+def create_organization(payload: NameInput, db: Session = Depends(get_db)):
+    row = Organization(name=payload.name)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@app.get("/api/v1/organizations", response_model=list[NamedRecord])
+def list_organizations(db: Session = Depends(get_db)):
+    return db.scalars(select(Organization).order_by(Organization.created_at, Organization.id)).all()
+
+
+@app.get("/api/v1/organizations/{record_id}", response_model=NamedRecord)
+def get_organization(record_id: UUID, db: Session = Depends(get_db)):
+    return _reference_or_404(db, Organization, record_id, "Organization")
+
+
+@app.post("/api/v1/users", response_model=UserRecord, status_code=201)
+def create_user(payload: UserInput, db: Session = Depends(get_db)):
+    row = User(display_name=payload.display_name)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@app.get("/api/v1/users", response_model=list[UserRecord])
+def list_users(db: Session = Depends(get_db)):
+    return db.scalars(select(User).order_by(User.created_at, User.id)).all()
+
+
+@app.get("/api/v1/users/{record_id}", response_model=UserRecord)
+def get_user(record_id: UUID, db: Session = Depends(get_db)):
+    return _reference_or_404(db, User, record_id, "User")
+
+
+@app.post("/api/v1/developers", response_model=NamedRecord, status_code=201)
+def create_developer(payload: NameInput, db: Session = Depends(get_db)):
+    row = Developer(name=payload.name)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@app.get("/api/v1/developers", response_model=list[NamedRecord])
+def list_developers(db: Session = Depends(get_db)):
+    return db.scalars(select(Developer).order_by(Developer.created_at, Developer.id)).all()
+
+
+@app.get("/api/v1/developers/{record_id}", response_model=NamedRecord)
+def get_developer(record_id: UUID, db: Session = Depends(get_db)):
+    return _reference_or_404(db, Developer, record_id, "Developer")
+
+
+@app.post("/api/v1/locations", response_model=LocationRecord, status_code=201)
+def create_location(payload: LocationInput, db: Session = Depends(get_db)):
+    if payload.parent_location_id:
+        _reference_or_404(db, Location, payload.parent_location_id, "Parent location")
+    row = Location(name=payload.name, parent_location_id=payload.parent_location_id)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@app.get("/api/v1/locations", response_model=list[LocationRecord])
+def list_locations(db: Session = Depends(get_db)):
+    return db.scalars(select(Location).order_by(Location.created_at, Location.id)).all()
+
+
+@app.get("/api/v1/locations/{record_id}", response_model=LocationRecord)
+def get_location(record_id: UUID, db: Session = Depends(get_db)):
+    return _reference_or_404(db, Location, record_id, "Location")
+
+
+@app.post("/api/v1/micro-markets", response_model=MicroMarketRecord, status_code=201)
+def create_micro_market(payload: MicroMarketInput, db: Session = Depends(get_db)):
+    if payload.location_id:
+        _reference_or_404(db, Location, payload.location_id, "Location")
+    row = MicroMarket(name=payload.name, location_id=payload.location_id)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@app.get("/api/v1/micro-markets", response_model=list[MicroMarketRecord])
+def list_micro_markets(db: Session = Depends(get_db)):
+    return db.scalars(select(MicroMarket).order_by(MicroMarket.created_at, MicroMarket.id)).all()
+
+
+@app.get("/api/v1/micro-markets/{record_id}", response_model=MicroMarketRecord)
+def get_micro_market(record_id: UUID, db: Session = Depends(get_db)):
+    return _reference_or_404(db, MicroMarket, record_id, "Micro-market")
+
+
+@app.post("/api/v1/projects", response_model=ProjectRecord, status_code=201)
+def create_project(payload: ProjectInput, db: Session = Depends(get_db)):
+    if payload.developer_id:
+        _reference_or_404(db, Developer, payload.developer_id, "Developer")
+    if payload.location_id:
+        _reference_or_404(db, Location, payload.location_id, "Location")
+    row = Project(
+        name=payload.name,
+        developer_id=payload.developer_id,
+        location_id=payload.location_id,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@app.get("/api/v1/projects", response_model=list[ProjectRecord])
+def list_projects(db: Session = Depends(get_db)):
+    return db.scalars(select(Project).order_by(Project.created_at, Project.id)).all()
+
+
+@app.get("/api/v1/projects/{record_id}", response_model=ProjectRecord)
+def get_project(record_id: UUID, db: Session = Depends(get_db)):
+    return _reference_or_404(db, Project, record_id, "Project")

@@ -26,6 +26,11 @@ Each remains open until the founder supplies a decision. These are blockers only
 | OPEN-007 | ROI, MOIC, cash-flow timing, discounting, tax/debt/sale conventions | M4 finance outputs |
 | OPEN-008 | Target IRR and maximum-price behavior for edge cases | M5 acquisition price solver |
 | OPEN-009 | Data rights/terms for any proposed external source | Any connector or source-specific ingestion |
+| OPEN-010 | User authentication identity and Organization membership/roles | Login, access control, and user-to-organization relationships |
+| OPEN-011 | Deal ownership by Organization and tenant isolation policy | Organization-scoped Deal reads and writes |
+| OPEN-012 | Project relationships to Deals/Properties and multi-developer/location cardinality | Project underwriting workflows |
+| OPEN-013 | Whether Developer is a company, person, or both; relationship to Organization | Developer identity and organization linkage |
+| OPEN-014 | Canonical Location hierarchy, MicroMarket boundaries, aliases, and free-text mapping | Geography validation and linking existing Property.city values |
 
 ## Record format
 

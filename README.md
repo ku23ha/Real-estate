@@ -1,6 +1,6 @@
 # Rethos clean-room scaffold
 
-The API's first persistent slice stores a Deal with its Property in PostgreSQL. See [database schema and migration](docs/database-schema.md), [architecture](docs/architecture.md), and [current state](docs/current-state.md).
+The API persists Deal and Property records and exposes the RET-010 reference domain entities. See [database schema and migrations](docs/database-schema.md), [domain model and open decisions](docs/domain-model.md), [architecture](docs/architecture.md), and [current state](docs/current-state.md).
 
 ## API local setup
 
@@ -22,7 +22,7 @@ python -m app.seed
 uvicorn app.main:app --reload
 ```
 
-The seed creates only a synthetic local development fixture. API startup fails clearly when `DATABASE_URL` is unset. Existing routes remain `POST /api/v1/deals`, `GET /api/v1/deals`, `GET /api/v1/deals/{id}`, and `GET /health`.
+The seed creates only a synthetic local development fixture. API startup fails clearly when `DATABASE_URL` is unset. Existing Deal/Property routes remain unchanged. RET-010 adds create/list/retrieve routes for `/api/v1/organizations`, `/users`, `/developers`, `/projects`, `/locations`, and `/micro-markets` (under the `/api/v1` prefix).
 
 To remove the initial schema, run `alembic downgrade base` from `apps/api`. This drops the Deal/Property tables and their data.
 
