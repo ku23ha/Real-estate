@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
+from decimal import Decimal
 from typing import AsyncIterator
 from uuid import UUID
 
@@ -7,9 +8,22 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.database import get_database_url, get_db, make_engine, make_session_factory
+from app.comparables import (
+    ComparableCreate,
+    ComparableFacts,
+    ComparableRecord,
+    CsvComparableImport,
+    ValuationRecord,
+    ValuationRequest,
+    calculate_indicative_valuation,
+    comparable_fingerprint,
+    parse_comparable_csv,
+    price_per_area,
+)
 from app.evidence import (
     EvidenceCreate,
     EvidenceRecord,
@@ -30,6 +44,7 @@ from app.domain import (
 )
 from app.models import (
     Deal,
+    Comparable,
     Developer,
     Evidence,
     EvidenceSource,
@@ -456,3 +471,185 @@ def get_evidence(deal_id: UUID, evidence_id: UUID, db: Session = Depends(get_db)
     if row is None:
         raise HTTPException(status_code=404, detail="Evidence not found")
     return row
+
+
+def _to_comparable_record(row: Comparable) -> ComparableRecord:
+    return ComparableRecord(
+        id=row.id,
+        deal_id=row.deal_id,
+        evidence_id=row.evidence_id,
+        transaction_date=row.transaction_date,
+        reported_price=row.reported_price,
+        currency_code=row.currency_code,
+        property_type=row.property_type,
+        area_value=row.area_value,
+        area_unit=row.area_unit,
+        location_label=row.location_label,
+        project_name=row.project_name,
+        developer_name=row.developer_name,
+        price_per_area=price_per_area(row.reported_price, row.area_value),
+    )
+
+
+def _comparable_row(deal_id: UUID, evidence_id: UUID, facts: ComparableFacts) -> Comparable:
+    return Comparable(
+        deal_id=deal_id,
+        evidence_id=evidence_id,
+        fingerprint=comparable_fingerprint(facts),
+        **facts.model_dump(),
+    )
+
+
+@app.post(
+    "/api/v1/deals/{deal_id}/comparables",
+    response_model=ComparableRecord,
+    status_code=201,
+)
+def create_comparable(deal_id: UUID, payload: ComparableCreate, db: Session = Depends(get_db)):
+    if db.get(Deal, deal_id) is None:
+        raise HTTPException(status_code=404, detail="Deal not found")
+    evidence = db.get(Evidence, payload.evidence_id)
+    if evidence is None or evidence.deal_id != deal_id:
+        raise HTTPException(status_code=404, detail="Evidence not found for this deal")
+    facts = ComparableFacts.model_validate(payload.model_dump(exclude={"evidence_id"}))
+    if evidence.evidence_type != "comparable_transaction":
+        raise HTTPException(status_code=422, detail="Evidence must be a comparable transaction record")
+    raw_facts = {
+        field: evidence.raw_content[field]
+        for field in ComparableFacts.model_fields
+        if field in evidence.raw_content
+    }
+    try:
+        evidenced_facts = ComparableFacts.model_validate(raw_facts)
+    except Exception as error:
+        raise HTTPException(
+            status_code=422,
+            detail="Evidence raw_content must include the comparable source facts",
+        ) from error
+    if evidenced_facts != facts:
+        raise HTTPException(
+            status_code=422,
+            detail="Comparable facts must match the linked evidence raw_content",
+        )
+    row = _comparable_row(deal_id, evidence.id, facts)
+    db.add(row)
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Duplicate comparable or evidence link") from error
+    db.refresh(row)
+    return _to_comparable_record(row)
+
+
+@app.get("/api/v1/deals/{deal_id}/comparables", response_model=list[ComparableRecord])
+def list_comparables(deal_id: UUID, db: Session = Depends(get_db)):
+    if db.get(Deal, deal_id) is None:
+        raise HTTPException(status_code=404, detail="Deal not found")
+    rows = db.scalars(
+        select(Comparable)
+        .where(Comparable.deal_id == deal_id)
+        .order_by(Comparable.transaction_date, Comparable.id)
+    ).all()
+    return [_to_comparable_record(row) for row in rows]
+
+
+@app.post(
+    "/api/v1/deals/{deal_id}/comparables/import",
+    response_model=list[ComparableRecord],
+    status_code=201,
+)
+def import_comparables(
+    deal_id: UUID, payload: CsvComparableImport, db: Session = Depends(get_db)
+):
+    if db.get(Deal, deal_id) is None:
+        raise HTTPException(status_code=404, detail="Deal not found")
+    try:
+        parsed_rows = parse_comparable_csv(payload.csv_content)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    fingerprints = [comparable_fingerprint(facts) for facts, _ in parsed_rows]
+    if len(set(fingerprints)) != len(fingerprints):
+        raise HTTPException(status_code=409, detail="CSV contains duplicate comparable rows")
+    existing_fingerprints = set(
+        db.scalars(
+            select(Comparable.fingerprint).where(
+                Comparable.deal_id == deal_id,
+                Comparable.fingerprint.in_(fingerprints),
+            )
+        ).all()
+    )
+    if existing_fingerprints:
+        raise HTTPException(status_code=409, detail="Comparable already exists for this deal")
+
+    source = EvidenceSource(
+        name=payload.source_name,
+        source_type=payload.source_type,
+        reference=payload.source_reference,
+        rights_status=payload.rights_status,
+        rights_notes=payload.rights_notes,
+    )
+    db.add(source)
+    db.flush()
+    rows = []
+    for row_number, (facts, raw) in enumerate(parsed_rows, start=2):
+        evidence = Evidence(
+            deal_id=deal_id,
+            source_id=source.id,
+            evidence_type="comparable_transaction",
+            observed_at=datetime.combine(facts.transaction_date, time.min, tzinfo=timezone.utc),
+            raw_content=raw,
+            normalized_content=None,
+            provenance={"method": "csv_import", "row_number": row_number},
+        )
+        db.add(evidence)
+        db.flush()
+        row = _comparable_row(deal_id, evidence.id, facts)
+        db.add(row)
+        rows.append(row)
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Comparable import conflicts with existing data") from error
+    for row in rows:
+        db.refresh(row)
+    return [_to_comparable_record(row) for row in rows]
+
+
+@app.post(
+    "/api/v1/deals/{deal_id}/valuation",
+    response_model=ValuationRecord,
+)
+def create_valuation(
+    deal_id: UUID, payload: ValuationRequest, db: Session = Depends(get_db)
+):
+    deal = db.scalar(
+        select(Deal).options(selectinload(Deal.property_record)).where(Deal.id == deal_id)
+    )
+    if deal is None:
+        raise HTTPException(status_code=404, detail="Deal not found")
+    property_record = deal.property_record
+    if not all(
+        (property_record.city, property_record.asset_type, property_record.area_value, property_record.area_unit)
+    ):
+        raise HTTPException(status_code=422, detail="Property requires city, asset type, area, and area unit")
+    rows = db.execute(
+        select(Comparable, EvidenceSource.rights_status)
+        .join(Evidence, Evidence.id == Comparable.evidence_id)
+        .join(EvidenceSource, EvidenceSource.id == Evidence.source_id)
+        .where(Comparable.deal_id == deal_id)
+    ).all()
+    try:
+        return calculate_indicative_valuation(
+            property_area=Decimal(property_record.area_value),
+            property_area_unit=property_record.area_unit,
+            property_type=property_record.asset_type,
+            location_label=property_record.city,
+            currency_code=payload.currency_code,
+            as_of=payload.as_of,
+            comparable_rows=[(comparable, rights_status) for comparable, rights_status in rows],
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
