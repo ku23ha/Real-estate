@@ -23,7 +23,7 @@ def test_migration_can_be_rolled_back(tmp_path: Path, monkeypatch) -> None:
         tables = set(inspect(engine).get_table_names())
         assert {
             "deals", "properties", "organizations", "users", "developers",
-            "locations", "micro_markets", "projects",
+            "locations", "micro_markets", "projects", "evidence_sources", "evidence",
         } <= tables
     finally:
         engine.dispose()
@@ -36,7 +36,27 @@ def test_migration_can_be_rolled_back(tmp_path: Path, monkeypatch) -> None:
         assert not {
             "deals", "properties", "organizations", "users", "developers",
             "locations", "micro_markets", "projects",
+            "evidence_sources", "evidence",
         } & tables
+    finally:
+        engine.dispose()
+
+
+def test_evidence_migration_downgrade_and_reupgrade(tmp_path: Path, monkeypatch) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'evidence-migration.db').as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    config = Config(str(API_ROOT / "alembic.ini"))
+    engine = create_engine(database_url)
+    try:
+        command.upgrade(config, "head")
+        command.downgrade(config, "20260930_0002")
+        tables = set(inspect(engine).get_table_names())
+        assert {"deals", "properties", "projects"} <= tables
+        assert not {"evidence", "evidence_sources"} & tables
+
+        command.upgrade(config, "head")
+        tables = set(inspect(engine).get_table_names())
+        assert {"deals", "properties", "projects", "evidence", "evidence_sources"} <= tables
     finally:
         engine.dispose()
 

@@ -10,6 +10,12 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session, selectinload
 
 from app.database import get_database_url, get_db, make_engine, make_session_factory
+from app.evidence import (
+    EvidenceCreate,
+    EvidenceRecord,
+    EvidenceSourceCreate,
+    EvidenceSourceRecord,
+)
 from app.domain import (
     LocationInput,
     LocationRecord,
@@ -25,6 +31,8 @@ from app.domain import (
 from app.models import (
     Deal,
     Developer,
+    Evidence,
+    EvidenceSource,
     Location,
     MicroMarket,
     Organization,
@@ -386,3 +394,65 @@ def list_projects(db: Session = Depends(get_db)):
 @app.get("/api/v1/projects/{record_id}", response_model=ProjectRecord)
 def get_project(record_id: UUID, db: Session = Depends(get_db)):
     return _reference_or_404(db, Project, record_id, "Project")
+
+
+@app.post("/api/v1/evidence-sources", response_model=EvidenceSourceRecord, status_code=201)
+def create_evidence_source(payload: EvidenceSourceCreate, db: Session = Depends(get_db)):
+    row = EvidenceSource(**payload.model_dump())
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@app.get("/api/v1/evidence-sources", response_model=list[EvidenceSourceRecord])
+def list_evidence_sources(db: Session = Depends(get_db)):
+    return db.scalars(
+        select(EvidenceSource).order_by(EvidenceSource.created_at, EvidenceSource.id)
+    ).all()
+
+
+@app.get("/api/v1/evidence-sources/{source_id}", response_model=EvidenceSourceRecord)
+def get_evidence_source(source_id: UUID, db: Session = Depends(get_db)):
+    return _reference_or_404(db, EvidenceSource, source_id, "Evidence source")
+
+
+@app.post(
+    "/api/v1/deals/{deal_id}/evidence",
+    response_model=EvidenceRecord,
+    status_code=201,
+)
+def create_evidence(deal_id: UUID, payload: EvidenceCreate, db: Session = Depends(get_db)):
+    if db.get(Deal, deal_id) is None:
+        raise HTTPException(status_code=404, detail="Deal not found")
+    if db.get(EvidenceSource, payload.source_id) is None:
+        raise HTTPException(status_code=404, detail="Evidence source not found")
+    row = Evidence(deal_id=deal_id, **payload.model_dump())
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@app.get("/api/v1/deals/{deal_id}/evidence", response_model=list[EvidenceRecord])
+def list_evidence(deal_id: UUID, db: Session = Depends(get_db)):
+    if db.get(Deal, deal_id) is None:
+        raise HTTPException(status_code=404, detail="Deal not found")
+    return db.scalars(
+        select(Evidence)
+        .where(Evidence.deal_id == deal_id)
+        .order_by(Evidence.created_at, Evidence.id)
+    ).all()
+
+
+@app.get(
+    "/api/v1/deals/{deal_id}/evidence/{evidence_id}",
+    response_model=EvidenceRecord,
+)
+def get_evidence(deal_id: UUID, evidence_id: UUID, db: Session = Depends(get_db)):
+    row = db.scalar(
+        select(Evidence).where(Evidence.deal_id == deal_id, Evidence.id == evidence_id)
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Evidence not found")
+    return row

@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Numeric, Text, UniqueConstraint, Uuid, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, JSON, Numeric, Text, UniqueConstraint, Uuid, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -138,3 +138,48 @@ class Project(Base):
     )
     developer: Mapped["Developer | None"] = relationship()
     location: Mapped["Location | None"] = relationship()
+
+
+class EvidenceSource(Base):
+    """Descriptive provenance for evidence origins; does not establish usage rights."""
+
+    __tablename__ = "evidence_sources"
+    __table_args__ = (
+        CheckConstraint("length(trim(name)) > 0", name="ck_evidence_sources_name_not_blank"),
+        CheckConstraint("length(trim(source_type)) > 0", name="ck_evidence_sources_type_not_blank"),
+        CheckConstraint("length(trim(rights_status)) > 0", name="ck_evidence_sources_rights_not_blank"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[str] = mapped_column(Text, nullable=False)
+    reference: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rights_status: Mapped[str] = mapped_column(Text, nullable=False)
+    rights_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class Evidence(Base):
+    """Append-only through the API; raw observation and its provenance are retained."""
+
+    __tablename__ = "evidence"
+    __table_args__ = (
+        CheckConstraint("length(trim(evidence_type)) > 0", name="ck_evidence_type_not_blank"),
+        Index("ix_evidence_deal_created", "deal_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    deal_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("deals.id"), nullable=False)
+    source_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("evidence_sources.id"), nullable=False
+    )
+    evidence_type: Mapped[str] = mapped_column(Text, nullable=False)
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    raw_content: Mapped[dict] = mapped_column(JSON, nullable=False)
+    normalized_content: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    provenance: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
